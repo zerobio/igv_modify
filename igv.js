@@ -34642,11 +34642,30 @@
 
         }
 
-        getSortValue({position, option, tag}, alignmentContainer) {
+        findAlignment_un(genomicLocation) {
+
+            const alignmentContains = (a, genomicLocation) => {
+                return genomicLocation >= a.start && genomicLocation < a.start + a.lengthOnRef
+            };
+
+            // find single alignment that overlaps sort location
+            let centerAlignment;
+            for (let i = 0; i < this.alignments.length; i++) {
+                const a = this.alignments[i];
+                centerAlignment = a;
+                break
+
+                }
+
+            return centerAlignment
+
+        }
+
+        getSortValue_un({position, option, tag}, alignmentContainer) {
 
             if (!option) option = "BASE";
 
-            const alignment = this.findAlignment(position);
+            const alignment = this.findAlignment_un(position);
             if (undefined === alignment) {  // This condition should never occur
                 return Number.MAX_VALUE
             }
@@ -34679,7 +34698,7 @@
                     var regix = RegExp(/S/);
                     return alignment.cigar.match(regix) == "S" ? -1 : 1
                 default:
-                    return Number.MAX_VALUE
+                    return -Number.MAX_VALUE
             }
 
 
@@ -34719,6 +34738,109 @@
                         baseScore -= delCount;
                     } else if (baseScore === 0) {    // Don't modify insertion score, if any
                         baseScore = 1;
+                    } else {
+                        baseScore = 1000;
+                    }
+                } else {
+                    reference = reference.toUpperCase();
+                    if ('N' === base && baseScore === 0) {
+                        baseScore = 2;
+                    } else if ((reference === base || '=' === base) && baseScore === 0) {
+                        baseScore = 4 - quality / 1000;
+                    } else if ("X" === base || reference !== base) {
+                        const count = coverage["pos" + base] + coverage["neg" + base];
+                        baseScore -= (count + (quality / 1000));
+                    }
+                }
+
+
+                return baseScore
+            }
+        }
+        getSortValue({position, option, tag}, alignmentContainer) {
+
+            if (!option) option = "BASE";
+
+            const alignment = this.findAlignment(position);
+            if (undefined === alignment) {  // This condition should never occur
+                return Number.MAX_VALUE
+            }
+
+            switch (option) {
+                case "NUCLEOTIDE":
+                case "BASE": {
+                    return calculateBaseScore(alignment, alignmentContainer, position)
+                }
+                case "STRAND":
+                    return alignment.strand ? 1 : -1
+                case "START":
+                    return alignment.start
+                case "TAG": {
+                    return alignment.tags()[tag]
+                }
+                case "READ_NAME":
+                    return alignment.readName
+                case "INSERT_SIZE":
+                    return -Math.abs(alignment.fragmentLength)
+                case "GAP_SIZE":
+                    return -alignment.gapSizeAt(position)
+                case "MATE_CHR":
+                    return alignment.mate
+                case "MQ":
+                    return alignment.mq === undefined ? Number.MAX_VALUE : -alignment.mq
+                case "ALIGNED_READ_LENGTH":
+                    return -alignment.lengthOnRef
+                case "SOFT_CLIPPED":
+                    var regix = RegExp(/S/);
+                    var regix_n = RegExp(/N/);
+                    console.log(alignment.cigar.match(regix))
+                    if (alignment.cigar.match(regix_n) == "N") {
+                        return Number.MAX_VALUE
+                    }
+                    return alignment.cigar.match(regix) == "S" ? -1 : 1
+                default:
+                    return -Number.MAX_VALUE
+            }
+
+
+            function calculateBaseScore(alignment, alignmentContainer, genomicLocation) {
+
+                let reference;
+                const idx = Math.floor(genomicLocation) - alignmentContainer.start;
+                if (idx < alignmentContainer.sequence.length) {
+                    reference = alignmentContainer.sequence.charAt(idx);
+                }
+                if (!reference) {
+                    return 0
+                }
+                const base = alignment.readBaseAt(genomicLocation);
+                const quality = alignment.readBaseQualityAt(genomicLocation);
+
+                const coverageMap = alignmentContainer.coverageMap;
+                const coverageMapIndex = Math.floor(genomicLocation - coverageMap.bpStart);
+                const coverage = coverageMap.coverage[coverageMapIndex];
+
+                // Insertions.  These are additive with base scores as they occur between bases, so you can have a
+                // base mismatch AND an insertion
+                let baseScore = 0;
+                if (alignment.insertions) {
+                    for (let ins of alignment.insertions) {
+                        if (ins.start === genomicLocation) {
+                            baseScore = -coverage.ins;
+                        }
+                    }
+                }
+
+
+                if (!base) {
+                    // Either deletion or skipped (splice junction)
+                    const delCount = coverage.del;
+                    if (delCount > 0) {
+                        baseScore -= delCount;
+                    } else if (baseScore === 0) {    // Don't modify insertion score, if any
+                        baseScore = 1;
+                    } else {
+                        baseScore = 1000;
                     }
                 } else {
                     reference = reference.toUpperCase();
@@ -34793,8 +34915,8 @@
 
     function packAlignmentRows(alignments, start, end, showSoftClips) {
 
-        //console.log(`packAlignmentRows ${start} ${end}`)
-        //const t0 = Date.now()
+        console.log(`packAlignmentRows ${start} ${end}`)
+        const t0 = Date.now()
 
         if (!alignments) {
             return undefined
@@ -35025,6 +35147,23 @@
                 }
             }
 
+            undefinedRow.sort((rowA, rowB) => {
+                const direction = options.direction;
+                const rowAValue = rowA.getSortValue_un(options, this);
+                const rowBValue = rowB.getSortValue_un(options, this);
+
+                if (rowBValue === undefined && rowBValue !== undefined) return 1
+                else if (rowAValue !== undefined && rowBValue === undefined) return -1
+
+                const i = rowAValue > rowBValue ? 1 : (rowAValue < rowBValue ? -1 : 0);
+                return true === direction ? i : -i
+            });
+
+            for (let row of undefinedRow) {
+                newRows.push(row);
+            }
+
+
             newRows.sort((rowA, rowB) => {
                 const direction = options.direction;
                 const rowAValue = rowA.getSortValue(options, this);
@@ -35037,9 +35176,7 @@
                 return true === direction ? i : -i
             });
 
-            for (let row of undefinedRow) {
-                newRows.push(row);
-            }
+
 
             this.packedAlignmentRows = newRows;
         }
